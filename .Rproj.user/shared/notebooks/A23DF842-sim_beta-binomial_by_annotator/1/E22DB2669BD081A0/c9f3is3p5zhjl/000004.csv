@@ -1,0 +1,9 @@
+"0","hist(x, main = expression(
+  paste(
+    ""Distribution of 1000 values of "",
+    pi%~%f[B](alpha, beta), 
+    ""sampled with scale parameter"")))
+"
+"2","Error in hist(x, main = expression(paste(""Distribution of 1000 values of "",  : 
+  object 'x' not found
+"

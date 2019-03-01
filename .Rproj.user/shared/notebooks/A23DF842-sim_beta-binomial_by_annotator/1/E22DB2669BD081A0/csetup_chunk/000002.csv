@@ -1,0 +1,69 @@
+"0","knitr::opts_chunk$set(echo = TRUE, warning = FALSE, fig.align = 'center', fig.width = 7, fig.height = 4)"
+"0","options(digits = 3)"
+"0","library(rstan)"
+"2","Loading required package: ggplot2
+"
+"2","Loading required package: StanHeaders
+"
+"2","package ‘StanHeaders’ was built under R version 3.5.2"
+"2","rstan (Version 2.18.2, GitRev: 2e1f913d3ca3)
+"
+"2","For execution on a local, multicore CPU with excess RAM we recommend calling
+options(mc.cores = parallel::detectCores()).
+To avoid recompilation of unchanged Stan programs, we recommend calling
+rstan_options(auto_write = TRUE)
+"
+"0","library(purrr)"
+"0","library(dplyr)"
+"2","
+Attaching package: ‘dplyr’
+
+"
+"2","The following objects are masked from ‘package:stats’:
+
+    filter, lag
+
+"
+"2","The following objects are masked from ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+"
+"0","library(tidyr)"
+"2","
+Attaching package: ‘tidyr’
+
+"
+"2","The following object is masked from ‘package:rstan’:
+
+    extract
+
+"
+"0","library(extraDistr)"
+"2","
+Attaching package: ‘extraDistr’
+
+"
+"2","The following object is masked from ‘package:purrr’:
+
+    rdunif
+
+"
+"0","library(ggplot2)"
+"0","library(ggridges)"
+"2","
+Attaching package: ‘ggridges’
+
+"
+"2","The following object is masked from ‘package:ggplot2’:
+
+    scale_discrete_manual
+
+"
+"0","# important: set seed for reproducability reasons"
+"0","set.seed(1234)"
+"0","getwd()"
+"1","[1]"
+"1"," ""/Users/licht/switchdrive/Documents/work/phd/methods/crowd-sourced_annotation/writeup/bayes_ecpr"""
+"1","
+"

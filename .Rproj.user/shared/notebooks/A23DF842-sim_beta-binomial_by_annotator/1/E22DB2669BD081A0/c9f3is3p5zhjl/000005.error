@@ -1,0 +1,1 @@
+{"frames":[{"character_number":0,"end_character_number":0,"end_line_number":0,"file":"","func":"hist(x, main = expression(paste(\"Distribution of 1000 values of \", \n    pi %~% f[B](alpha, beta), \"sampled with scale parameter\")))","line_number":0}],"message":"Error in hist(x, main = expression(paste(\"Distribution of 1000 values of \",  : \n  object 'x' not found\n"}
