@@ -4,6 +4,10 @@ author: "Hauke Licht"
 output: html_document
 ---
 
+```{r knitr, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = 'center', fig.width = 7, fig.height = 4, out.width = "90%", out.height = "90%")
+```
+
 ## Research Interest 
 
 I want to measure the salience of three different dimensions of populism in textual data:
@@ -71,13 +75,16 @@ This model can be graphically depicted as follows:
 <img src="carpenter_2008_beta-binomial_by_annotator_plate_diagram.png" width="600"/>
 </center>
 
-## Implementation in **R** 
+## Implementation in **R** and **JAGS**
 
-```{r setup, message=F, warning=F}
-
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, fig.align = 'center', fig.width = 7, fig.height = 4)
+```{r setup}
+# set digits
 options(digits = 3)
-library(rstan)
+# important: set seed for reproducability reasons
+set.seed(1234)
+
+# load required packages
+library(rjags)
 library(purrr)
 library(dplyr)
 library(tidyr)
@@ -85,10 +92,72 @@ library(extraDistr)
 library(ggplot2)
 library(ggridges)
 
-# important: set seed for reproducability reasons
-set.seed(1234)
+#' Obtain parameter estimates from MCMC fit object
+#' 
+#' @descritpion Given an \code{mcmc.list} object created by fitting a JAGS model,
+#'      and a list of parameters of interest, the function returns the 
+#'      parameter estimates for each chain and all iterations in a tidy dataframe
+#' 
+#' @param fit.obj A \code{mcmc.list} containing the parameter estimates for all iterations and all chains obtained by fitting a JAGS model using \code[rjags]{}
+#' 
+#' @param params A character vector specifiying the parameters of interest.
+#'    If \code{use.regex = TRUE} (the default), regular expressions will be expected.
+#' 
+#' @param use.regex Logical, specifying whether \code{params} is defined using regular expressions
+#'    Defaulting to \code{TRUE}
+#'
+#' @return A tidy dataframe with columns
+#'    'parameter' (the paramenter, character),
+#'    'chain' (chain counter, integer),
+#'    'est' (the estimate), and
+#'    'iter' (iteration counter, integer)
+#'
+#' @note Functionality comparable to the \code[ggmcmc]{ggs} function in the \code[ggmcmc]{ggmcmc} pacakge.
+#'
+#' @importFrom tibble tibble
+#' @importFrom purrr map_df
+#' @importFrom dplyr mutate
+#' @importFrom dplyr row_number
+#' 
+get_mcmc_estimates <- function(fit.obj, params, use.regex = TRUE){
 
-getwd()
+  if (!inherits(fit.obj, "mcmc.list"))
+    stop("`fit.obj` must be a 'mcmc.list' object")
+  
+  # test number of chains (equals No. top-level list elements)
+  if ( (n_chains <- length(fit.obj)) == 0)
+    stop("`fit.obj` has zero length")
+  
+  # get parameters contained in fit object
+  these_params <- colnames(fit.obj[[1]])
+  
+  # get index positions of parameters to be obtained
+  if (use.regex) {
+    idxs <- which(grepl(params, these_params))
+  } else {
+    if (any((miss_params <- !params %in% these_params)))
+      warning(
+        "The following `params` are not contained in `fit.obj`: ", 
+        paste0("'", params[miss_params], "'", collapse = ", ")
+      )
+    idxs <- which(these_params %in% params)
+  }
+  
+  # obtain parameter estimates in tidy data frame
+  suppressWarnings(
+    purrr::map_df(these_params[idxs], function(param, obj = fit.obj){
+      purrr::map_df(1:n_chains, function(c, o = obj, p = param) {
+        tibble::tibble(
+          parameter = param
+          , chain = c
+          , est = o[[c]][, p]
+        ) %>% 
+          dplyr::mutate(iter = dplyr::row_number())
+      })
+    })
+  )
+}
+
 ```
 
 ## Simulating the data-generation process
@@ -118,9 +187,29 @@ The probability density functions (PDFs) of the $\theta_{j\cdot}$ parameters loo
 pdf_theta0 <- function(x) dbeta(x, alpha0, beta0)
 pdf_theta1 <- function(x) dbeta(x, alpha1, beta1)
 
-par(mfrow = c(1,2))
-curve(pdf_theta0, from = 0, to = 1, ylab = "Density", xlab = expression(theta[0]), main = "Beta(40, 8)")
-curve(pdf_theta1, from = 0, to = 1, ylab = "Density", xlab = expression(theta[1]), main = "Beta(20, 8)")
+# par(mfrow = c(1,2))
+# curve(pdf_theta0, from = 0, to = 1, ylab = "Density", xlab = expression(theta[0]), main = "Beta(40, 8)")
+# curve(pdf_theta1, from = 0, to = 1, ylab = "Density", xlab = expression(theta[1]), main = "Beta(20, 8)")
+
+ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+  stat_function(fun=pdf_theta0, aes(color = "theta[0]")) +
+  stat_function(fun=pdf_theta1, aes(color = "theta[1]")) +
+  # stat_function(fun=pdf_theta0, aes(color = expression(theta[0]%~%Beta(40,8)))) +
+  # stat_function(fun=pdf_theta1, aes(color = expression(theta[1]%~%Beta(20,8)))) +
+  labs(
+    title = expression(paste("Prior densities ", theta[0], " and ", theta[1]))
+    , y = "Density"
+    , x = expression(theta[.])
+    , color = ""
+  ) + 
+  theme_bw() +
+  theme(legend.position = "top") +
+  scale_colour_discrete(
+    labels = c(
+      expression(theta[0]%~%f[Beta](40, 8))
+      , expression(theta[1]%~%f[Beta](20, 8))
+    )
+  )
 ```
 
 Given this setup, we first sample the 1000 instance from a Bernoulli disrtribution with p = .2, and coders' specificieties and sensitivities.
@@ -135,14 +224,26 @@ sim_theta1 <- rbeta(n = n_coders, shape1 = alpha1, shape2 = beta0)
 
 We can inspect the bivariate distribution of coders' 'true' ability parameters:
 ```{r plot sim thetas, echo = FALSE}
-plot(
-  x = sim_theta0, y = sim_theta1
-  , xlim = c(0,1), ylim = c(0,1)
-  , xlab = expression(theta[0]), ylab = expression(theta[1])
-  , cex = .5
-)
-abline(v = mean(sim_theta0), col = "grey")
-abline(h = mean(sim_theta1), col = "grey")
+tibble(
+  theta0 = sim_theta0
+  , theta1 = sim_theta1
+) %>% 
+  ggplot(aes(x = theta0, y = theta1)) +
+    geom_vline(aes(xintercept = mean(theta0)), color = "grey") +
+    geom_hline(aes(yintercept = mean(theta1)), color = "grey") + 
+    geom_point() +
+    scale_x_continuous(limits = 0:1) +
+    scale_y_continuous(limits = 0:1) +
+    labs(
+      title = "Distribution of coders' simulated ability parameters"
+      , subtitle = expression(paste("Sensitivity (",theta[1],") vs. specificity (",theta[0],")"))
+      , x = expression(theta[0])
+      , y = expression(theta[1])
+    ) +
+    theme_bw() +
+    theme(
+      axis.title.y = element_text(angle = 0, vjust = .5) 
+    )
 ```
 They nicely scatter so that we have different coder types.[^3]
 
@@ -237,20 +338,27 @@ coder_performances %>%
       breaks = 1:20
       , limits = c(0.5, 20.5)
     ) + 
+    scale_colour_discrete(guide = FALSE) +
     facet_grid(~factor(metric)) + 
-    theme_bw() +
     labs(
-      title = "Observed coder performances and number of judgements\n per coder in simulated data"
-      , subtitle = "Accuracies, true-negative rates (TNR), and true-positive rates (TPR)"
+      title = "Observed coder performance in simulated data vs. simulated ability paramaters"
+      # , subtitle = "Accuracies, true-negative rates (TNR), and true-positive rates (TPR)"
+      , subtitle = "Red crosses mark simulated parameter values"
       , x = ""
       , y = "Coder"
-      , color = "'true' parameter values"
+      # , color = "Simulated parameter values"
       , size = "No. judgments"
       , caption = "
       accuracy = (true-positives + true-negatives) / N
       TFR = true-positives / (true-positives + false-negatives)
       TNR = true-negatives / (true-negatives + false-positives)"
+    ) +
+    theme_bw() +
+    theme(
+      plot.caption = element_text(hjust = 0)
+      , legend.position = "top"
     )
+
 ```
 
 We can see that the simulated, i.e., 'observed' coder-specific specificities and sensitivities fall in the ranges [`r range(coder_performances$TNR)`] and [`r range(coder_performances$TPR)`], respectively, and largely overlap the (randomly drawn) 'true' but unobserved parameter values.
@@ -341,50 +449,63 @@ beta1 <- scale1-alpha1;
 ```
 Let's have a look at how the mean and scale parameters are distributed
 ```{r plot hyperprior distr, echo = FALSE}
-par(mfrow = c(1,2))
-pdf_flat_beta <- function(x) dbeta(x, 1, 1)
-curve(
-  pdf_flat_beta
-  , from = 0, to = 1
-  , main = "Prior density on the mean of ability parameters"
-  , ylab = "Density"
-  , xlab = expression(alpha/(alpha + beta))
-)
+ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+  stat_function(fun=function(x) dbeta(x, 1, 1)) +
+  theme_bw() +
+  labs(
+    title = expression(
+      paste(
+        "Prior density on the mean of ability parameters: ",
+        alpha[.]/(alpha[.] + beta[.])%~%f[Beta](1,1)
+      ))
+    , y = "Density"
+    , x = expression(alpha[.]/(alpha[.] + beta[.]))
+  )
 
+ggplot(data.frame(x = 1:20), aes(x)) + 
+  stat_function(fun=function(x) extraDistr::dpareto(x, 1.5, 1)) +
+  theme_bw() +
+  labs(
+    title = expression(
+      paste(
+        "Prior density on the scale of ability parameters: ",
+        (alpha[.] + beta[.])%~%f[Pareto](1.5,1)
+      ))
+    , y = "Density"
+    , x = expression((alpha[.] + beta[.]))
+  )
 
-pdf_pareto <- function(x) extraDistr::dpareto(x, 1.5, 1)
-curve(
-  pdf_pareto
-  , from = 1, to = 20
-  , main = "Prior density on scale of ability parameters"
-  , ylab = "Density"
-  , xlab = expression((alpha + beta))
-)
 ```
 
 If we sample 1000 pairs from these distributions and draw from Beta distributions with corresponding parameters, we get the following empirical distribution:
 
 ```{r inspect beta hyperprior distr}
 beta_means <- rbeta(1000, 1, 1)
-beta_scales <- extraDistr::rpareto(1000, 1, 1)
+beta_scales <- extraDistr::rpareto(1000, 1.5, 1)
 
-# we take advanteage of vectorization in R
+# we take advantage of vectorization in R
 alphas <- beta_means*beta_scales
 betas <- beta_scales-alphas
 x <- rbeta(1000, alphas, betas)
+```
 
-hist(
-  x, 
-  xlab = expression(pi[t]),
-  main = expression(
-  paste(
-    "Distribution of 1000 values of ",
-    pi[t]%~%f[Beta](alpha, beta), 
-    " sampled with scale parameter ",
-    beta%~%f[Pareto](1.5,1),
-    " and mean parameter ",
-    alpha%~%f[Beta](1,1)
-    )))
+```{r plot beta hyperprior distr, echo = FALSE}
+ggplot(tibble(x = x), aes(x = x)) +
+  geom_histogram(alpha = .75) +
+  theme_bw() + 
+  labs(
+    title = expression(paste("Distribution of 1000 sampled values of ", pi[t]%~%f[Beta](alpha, beta)))
+    , subtitle = expression(
+      paste( 
+        " with mean ",
+        alpha/(alpha+beta)%~%f[Beta](1,1),
+        " and scale ",
+        (alpha+beta)%~%f[Pareto](1.5,1)
+      )
+    )
+    , x = expression(pi[t])
+    , y = "Count"
+  )
 ```
 
 Essentially, our prior is pushing coders' ability parameters to the extremes.
@@ -471,7 +592,33 @@ updating and fitting the model took `r blm$runtime` minutes on my MacBook Pro wi
 First we want to see whether chains mix and the model generally converged. 
 Due to the abundance of parameters in our model, we use the deviance information criterion (DIC) to assess these questions.
 ```{r plot baseline deviance}
-plot(baseline_fit[, "deviance"])
+bl_dic <- get_mcmc_estimates(fit.obj = baseline_fit, params = "deviance")
+
+bl_dic %>% 
+  ggplot(aes(x = iter, y = est, color = factor(chain))) +
+  geom_line(alpha = .5) +
+  theme_bw() +
+  labs(
+    title = "Deviance information criterion (DIC) for first 1000 iterations"
+    , subtile = "Obtained for baseline model specification"
+    , y = "DIC"
+    , x = "Iteration"
+    , color = "Chains:"
+  ) +
+  theme(
+    legend.position = "bottom"
+  )
+
+bl_dic %>% 
+  ggplot(aes(x = est)) + 
+  geom_density(fill = "grey", alpha = .75, color = NA) + 
+  theme_bw() +
+  labs(
+    title = "Distribution of deviance information criterion after burn-in"
+    , subtitle = "Obtained from 3 chains for 1000 iterations"
+    , x = "DIC"
+    , y = "Density"
+  )
 ```
 
 ```{r gelman.plot baseline deviance}
@@ -491,26 +638,43 @@ coda::autocorr.plot(baseline_fit[, "deviance"], ask = F)
 
 Chains mix nicely, and the model converges quickely
 ```{r plot baseline pi}
-plot(baseline_fit[, "pi"], main = expression(pi))
+bl_pi <- get_mcmc_estimates(fit.obj = baseline_fit, params = "pi")
+
+bl_pi %>% 
+  ggplot(aes(x = iter, y = est, color = factor(chain))) +
+  geom_line(alpha = .5) +
+  theme_bw() +
+  labs(
+    title = expression(paste("Posterior estimates of ", pi, " for first 1000 iterations"))
+    , subtitle = "Obtained for baseline model specification"
+    , y = expression(pi)
+    , x = "Iteration"
+    , color = "Chains:"
+  ) +
+  theme(
+    legend.position = "bottom"
+    , axis.title.y = element_text(angle = 0, vjust = .5)
+  )
+
 coda::gelman.plot(baseline_fit[, "pi"], main = expression(pi))
 ```
 
 But posterior density has mass in region $[.78, .81]$!
 ```{r plot baseline mpdf pi}
-ggplot(
-  tibble(x = unlist(baseline_fit[, "pi"]))
-  , aes(x = x)
-) + 
-  geom_density(color = "grey", fill = "lightgrey", alpha = .75) + 
+bl_pi %>% 
+  ggplot(aes(x = est)) + 
+  geom_density(fill = "grey", alpha = .75, color = NA) + 
   scale_x_continuous(limits = c(0,1)) +
   geom_vline(xintercept = pi, color = "red") +
   theme_bw() +
-  labs (
-    title = expression(paste("Marginal posterior density of ", pi))
-    , subtitle = "Red line indicates 'true' value"
+  labs(
+    title = expression(paste("Distribution of posterior estimates of ", pi, " and simulated parameter value"))
+    , subtitle = "Red vertical line marks simulated parameter value"
+    , caption = "Obtained from 3 chains for 1000 iterations"
+    , x = expression(pi)
     , y = "Density"
-    , x = ""
-  )
+  ) +
+  theme(plot.caption = element_text(hjust = 0))
 ```
 
 
@@ -519,22 +683,20 @@ ggplot(
 Since we have `r n_coders` posterior density distributions for each $\theta_0, \theta_1$, we'll omit visual inspection of chains and autocorrelation and instead rely on the DIC to judge convergence.
 
 Instead we directly plot marginal posterior densities by coder and parameter:
-```{r plot baseline mpdf thetas}
-# gives n_coders*n_chains*n_iterations = 60,000 rows
-post_thetas <- map_df(1:n_coders, function(j) 
-  tibble(
-    coder = j
-    , theta0 = unlist(baseline_fit[, sprintf("theta0[%s]", j)] )
-    , theta1 = unlist(baseline_fit[, sprintf("theta1[%s]", j)] )
-  )
-)
+```{r plot baseline mpdf thetas, echo = FALSE, message = FALSE}
+post_thetas <- get_mcmc_estimates(fit.obj = baseline_fit, params = "^theta(0|1)\\[\\d+\\]$")
 
 post_thetas %>% 
-  gather(parameter, value, -coder) %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = gsub("\\]$", "", coder)
+    # make use of regex capturing grpoup operator (https://stackoverflow.com/a/48365518)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
   ggplot(
     aes(
-      y = factor(coder)
-      , x = value
+      y = factor(coder, levels = 1:n_coders)
+      , x = est
       , group = coder
     )
   ) +
@@ -546,23 +708,37 @@ post_thetas %>%
     shape = 3
     , color = "red"
     , data = tibble(
-      coder = rep(1:n_coders, 2)
-      , parameter = rep(paste0("theta", 0:1), each = n_coders)
+      coder = rep(factor(1:n_coders, levels = 1:n_coders), 2)
+      , parameter = rep(paste0("theta[", 0:1, "]"), each = n_coders)
       , value = c(sim_theta0, sim_theta1)
     )
     , aes(y = factor(coder), x = value, group = coder)
   ) +
   scale_x_continuous(limits = c(0,1))+
-  facet_grid(rows = vars(parameter)) + 
+  facet_grid(
+    rows = vars(parameter)
+    , labeller = label_parsed
+    , switch = "y"
+  ) + 
   labs(
     title = "Marginal posterior densities of ability parameters by coder"
-    , subtitle = "Red crosses mark 'true' values"
+    , subtitle = "Red crosses mark simulated parameter values"
     , x = ""
-    , y = "Coder"
+    # , y = "Coder"
+    , y = ""
     , fill = "Parameter"
+    , caption = expression(paste(
+      theta[0]," := specificity (true-negative rate); ",
+      theta[1]," := sensitivity (true-positive rate)"
+    ))
   ) + 
   coord_flip() +
-  theme_bw()
+  theme_bw() +
+  theme(
+    strip.text.y = element_text(angle = 180)
+    # , strip.background = element_rect(fill = NA)
+    , plot.caption = element_text(hjust = 0)
+  )
 ```
 
 Just as in the case of prevalence, we can clearly see how ability parameter estimates are consistently flipped relative to the 'true' simulation parameter values.
@@ -570,14 +746,19 @@ Just as in the case of prevalence, we can clearly see how ability parameter esti
 In fact, estimates and true values are negatively correlated as the next plot illustrates:
 ```{r plot baseline thetas corr}
 post_thetas %>% 
-  gather(param, value, -coder) %>% 
-  group_by(coder, param) %>% 
-  summarise(
-    mean = mean(value)
-    , q5 = quantile(value, .05)
-    , q95 = quantile(value, .95)
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = as.integer(gsub("\\]$", "", coder))
+    # make use of regex capturing grpoup operator (https://stackoverflow.com/a/48365518)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
   ) %>% 
-  arrange(param, coder) %>% 
+  group_by(coder, parameter) %>% 
+  summarise(
+    mean = mean(est)
+    , q5 = quantile(est, .05)
+    , q95 = quantile(est, .95)
+  ) %>% 
+  arrange(parameter, coder) %>% 
   ungroup() %>% 
   mutate(true_val = c(sim_theta0, sim_theta1)) %>% 
   ggplot(aes(x = true_val, y = mean)) +
@@ -587,14 +768,16 @@ post_thetas %>%
     scale_x_continuous(limits = 0:1) +
     scale_y_continuous(limits = 0:1) +
     geom_abline(slope = 1, intercept = 0, size = .5, color = "grey") +
-    facet_grid(~param) +
-    theme_bw() + 
+    facet_grid(~parameter, labeller = label_parsed) +
     labs(
-      title = "Mean posterior coder abilities vs. 'true' parameter values."
-      , subtitle = "Vertical lines overlaying mean values depict 90% credibility intervall, the diagonal indicates perfect correspondence."
+      title = "Mean posterior coder abilities vs. simulated parameter values"
+      , subtitle = "Points depict mean posterior values, overlaying vertical lines 90% credibility intervalls"
       , x = "Simulated parameter value"
       , y = "Posterior value"
-    )
+      , caption = "diagonal indicates perfect correspondence"
+    ) +
+    theme_bw() + 
+    theme(plot.caption = element_text(hjust = 0))
 ```
 
 The data pulls ability parameters towards low values, but the informative beta priors pull in the opposite direction.
@@ -606,13 +789,14 @@ Finally, we can take a look on the model-classification of items relative to the
 
 ```{r inspect baseline class membership}
 # gives n_items*n_chains*n_iterations = 1000*3*1000 = 3,000,000 rows
-post_c <- map_df(1:n_items, function(i) 
-  tibble(item = i, c = unlist(baseline_fit[, sprintf("c[%s]", i)]))
-)
+post_c <- get_mcmc_estimates(fit.obj = baseline_fit, params = "c\\[\\d+\\]")
 
 post_c %>% 
-  group_by(item) %>% 
-  summarise(pr_pos = sum(c)/n()) %>% 
+  group_by(parameter) %>% 
+  summarise(pr_pos = sum(est)/n()) %>% 
+  mutate(
+    item = as.integer(stringr::str_extract(parameter, "\\d+"))
+  ) %>% 
   mutate(est_class = as.integer(pr_pos > .5)) %>% 
   left_join(tibble(item = 1:n_items, true_class = sim_item_classes)) %>% 
   mutate(aggreement = true_class == est_class) %>% 
@@ -635,10 +819,26 @@ Also, items' classes are outside of the context of simulated data unknown, so in
 I also tried to induce correct convergence by using the following priors on $\pi$.
 
 ```{r plot alt pi priors}
-par(mfrow = c(1,3))
-curve(dbeta(x*2, 2, 2), 0, 1, main = expression(x%~%f[B](2,2)/2))
-curve(dbeta(x*2, 1.5, 1.5), 0, 1, main = expression(x%~%f[B](1.5,1.5)/2))
-curve(dbeta(x*2, 1.1, 1.1), 0, 1, main = expression(x%~%f[B](1.1,1.1)/2))
+ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+  stat_function(fun=function(x) dbeta(x*2, 2, 2), aes(color = "2,2")) +
+  stat_function(fun=function(x) dbeta(x*2, 1.5, 1.5), aes(color = "1.5,1.5")) +
+  stat_function(fun=function(x) dbeta(x*2, 1.1, 1.1), aes(color = "1.1,1.1")) +
+  labs(
+    title = expression(paste("Alternative prior densities of ", pi))
+    , y = "Density"
+    , x = expression(pi)
+    , color = ""
+  ) + 
+  theme_bw() +
+  theme(legend.position = "top") +
+  scale_colour_discrete(
+    labels = c(
+      expression(pi%~%f[B](2,2)/2)
+      , expression(pi%~%f[B](1.5,1.5)/2)
+      , expression(pi%~%f[B](1.1,1.1)/2)
+    )
+  )
+
 ```
 
 I implemented this in the JAGS code for the second prior density by replacing the line `pi ~ dbeta(1,1)` by the following code
@@ -707,7 +907,14 @@ That is, I changed the line `pi ~ dbeta(1,1)` in the adapted model to `pi ~ dbet
 The prior looks like follows:
 
 ```{r informative beta prior}
-curve(dbeta(x, 1.5, 7), from = 0, to = 1, ylab = "Density", xlab = expression(theta[0]), main = "Beta(1.5, 7)")
+ggplot(data.frame(x = seq(0,1,.1)), aes(x)) + 
+  stat_function(fun=function(x) dbeta(x*2, 1.5, 7)) +
+  labs(
+    title = expression(paste("Prior density ", pi%~%f[Beta](1.5,7), " in adapted model"))
+    , y = "Density"
+    , x = expression(pi)
+  ) + 
+  theme_bw()
 ```
 
 This was the only possible way to obtain correct classifications and posterior densities to center on or around to the simulated values.
@@ -762,7 +969,33 @@ First we want to see whether chains mix and the model generally converged.
 We again confie visual insteopction to the DIC.
 
 ```{r plot adapted deviance, echo = FALSE}
-plot(adapted_fit[, "deviance"])
+bl_dic <- get_mcmc_estimates(fit.obj = adapted_fit, params = "deviance")
+
+bl_dic %>% 
+  ggplot(aes(x = iter, y = est, color = factor(chain))) +
+  geom_line(alpha = .5) +
+  theme_bw() +
+  labs(
+    title = "Deviance information criterion (DIC) for first 1000 iterations"
+    , subtitle = "Obtained for adapted model specification"
+    , y = "DIC"
+    , x = "Iteration"
+    , color = "Chains:"
+  ) +
+  theme(
+    legend.position = "bottom"
+  )
+
+bl_dic %>% 
+  ggplot(aes(x = est)) + 
+  geom_density(fill = "grey", alpha = .75, color = NA) + 
+  theme_bw() +
+  labs(
+    title = "Distribution of deviance information criterion after burn-in"
+    , subtitle = "Obtained from 3 chains for 1000 iterations"
+    , x = "DIC"
+    , y = "Density"
+  )
 ```
 
 ```{r gelman.plot adapted deviance, echo = FALSE}
@@ -780,26 +1013,43 @@ coda::autocorr.plot(adapted_fit[, "deviance"], ask = F)
 
 Chains mix nicely, and the model converges quickely.
 ```{r plot adapted pi, echo = FALSE}
-plot(adapted_fit[, "pi"], main = expression(pi))
+bl_pi <- get_mcmc_estimates(fit.obj = adapted_fit, params = "pi")
+
+bl_pi %>% 
+  ggplot(aes(x = iter, y = est, color = factor(chain))) +
+  geom_line(alpha = .5) +
+  theme_bw() +
+  labs(
+    title = expression(paste("Posterior estimates of ", pi, " for first 1000 iterations"))
+    , subtitle = "Obtained for baseline model specification"
+    , y = expression(pi)
+    , x = "Iteration"
+    , color = "Chains:"
+  ) +
+  theme(
+    legend.position = "bottom"
+    , axis.title.y = element_text(angle = 0, vjust = .5)
+  )
+
 coda::gelman.plot(adapted_fit[, "pi"], main = expression(pi))
 ```
 
 And it does so on the simulatred value:
 ```{r plot adapted mpdf pi, echo = FALSE}
-ggplot(
-  tibble(x = unlist(adapted_fit[, "pi"]))
-  , aes(x = x)
-) + 
-  geom_density(color = "grey", fill = "lightgrey", alpha = .75) + 
+bl_pi %>% 
+  ggplot(aes(x = est)) + 
+  geom_density(fill = "grey", alpha = .75, color = NA) + 
   scale_x_continuous(limits = c(0,1)) +
   geom_vline(xintercept = pi, color = "red") +
   theme_bw() +
-  labs (
-    title = expression(paste("Marginal posterior density of ", pi))
-    , subtitle = "Red line indicates 'true' value"
+  labs(
+    title = expression(paste("Distribution of posterior estimates of ", pi, " and simulated parameter value"))
+    , subtitle = "Red vertical line marks simulated parameter value"
+    , caption = "Obtained from 3 chains for 1000 iterations"
+    , x = expression(pi)
     , y = "Density"
-    , x = ""
-  )
+  ) +
+  theme(plot.caption = element_text(hjust = 0))
 ```
 
 
@@ -807,21 +1057,19 @@ ggplot(
 
 Inspecting the marginal posterior densities of ability parameters by coder and parameter, we also find that the adapted model by and larfge converges on the simulated parameters
 ```{r plot adapted mpdf thetas, echo = FALSE}
-# gives n_coders*n_chains*n_iterations = 60,000 rows
-post_thetas <- map_df(1:n_coders, function(j) 
-  tibble(
-    coder = j
-    , theta0 = unlist(adapted_fit[, sprintf("theta0[%s]", j)] )
-    , theta1 = unlist(adapted_fit[, sprintf("theta1[%s]", j)] )
-  )
-)
+post_thetas <- get_mcmc_estimates(fit.obj = adapted_fit, params = "^theta(0|1)\\[\\d+\\]$")
 
 post_thetas %>% 
-  gather(parameter, value, -coder) %>% 
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = gsub("\\]$", "", coder)
+    # make use of regex capturing grpoup operator (https://stackoverflow.com/a/48365518)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
+  ) %>% 
   ggplot(
     aes(
-      y = factor(coder)
-      , x = value
+      y = factor(coder, levels = 1:n_coders)
+      , x = est
       , group = coder
     )
   ) +
@@ -833,53 +1081,76 @@ post_thetas %>%
     shape = 3
     , color = "red"
     , data = tibble(
-      coder = rep(1:n_coders, 2)
-      , parameter = rep(paste0("theta", 0:1), each = n_coders)
+      coder = rep(factor(1:n_coders, levels = 1:n_coders), 2)
+      , parameter = rep(paste0("theta[", 0:1, "]"), each = n_coders)
       , value = c(sim_theta0, sim_theta1)
     )
     , aes(y = factor(coder), x = value, group = coder)
   ) +
   scale_x_continuous(limits = c(0,1))+
-  facet_grid(rows = vars(parameter)) + 
+  facet_grid(
+    rows = vars(parameter)
+    , labeller = label_parsed
+    , switch = "y"
+  ) + 
   labs(
     title = "Marginal posterior densities of ability parameters by coder"
-    , subtitle = "Red crosses mark 'true' values"
+    , subtitle = "Red crosses mark simulated parameter values"
     , x = ""
-    , y = "Coder"
+    # , y = "Coder"
+    , y = ""
     , fill = "Parameter"
+    , caption = expression(paste(
+      theta[0]," := specificity (true-negative rate); ",
+      theta[1]," := sensitivity (true-positive rate)"
+    ))
   ) + 
   coord_flip() +
-  theme_bw()
+  theme_bw() +
+  theme(
+    strip.text.y = element_text(angle = 180)
+    # , strip.background = element_rect(fill = NA)
+    , plot.caption = element_text(hjust = 0)
+  )
+
 ```
 
 For the fit obtained by the adapted model, estimates and true values are now positively:
 ```{r plot adapted thetas corr, echo = FALSE}
+
 post_thetas %>% 
-  gather(param, value, -coder) %>% 
-  group_by(coder, param) %>% 
-  summarise(
-    mean = mean(value)
-    , q5 = quantile(value, .05)
-    , q95 = quantile(value, .95)
+  separate(parameter, c("parameter", "coder"), sep = "\\[") %>% 
+  mutate(
+    coder = as.integer(gsub("\\]$", "", coder))
+    # make use of regex capturing grpoup operator (https://stackoverflow.com/a/48365518)
+    , parameter = gsub("(\\d)$", "[\\1]", parameter, perl = TRUE)
   ) %>% 
-  arrange(param, coder) %>% 
+  group_by(coder, parameter) %>% 
+  summarise(
+    mean = mean(est)
+    , q5 = quantile(est, .05)
+    , q95 = quantile(est, .95)
+  ) %>% 
+  arrange(parameter, coder) %>% 
   ungroup() %>% 
   mutate(true_val = c(sim_theta0, sim_theta1)) %>% 
   ggplot(aes(x = true_val, y = mean)) +
-    # geom_smooth(method='lm', formula=y~x, se = FALSE) +
-    geom_point(size = .5) +
-    geom_linerange(aes(ymin = q5, ymax = q95), width = .1) +
-    scale_x_continuous(limits = 0:1) +
-    scale_y_continuous(limits = 0:1) +
-    geom_abline(slope = 1, intercept = 0, size = .5, color = "grey") +
-    facet_grid(~param) +
-    theme_bw() + 
-    labs(
-      title = "Mean posterior coder abilities vs. 'true' parameter values."
-      , subtitle = "Vertical lines overlaying mean values depict 90% credibility intervall, the diagonal indicates perfect correspondence."
-      , x = "Simulated parameter value"
-      , y = "Posterior value"
-    )
+  # geom_smooth(method='lm', formula=y~x, se = FALSE) +
+  geom_point(size = .5) +
+  geom_linerange(aes(ymin = q5, ymax = q95), width = .1) +
+  scale_x_continuous(limits = 0:1) +
+  scale_y_continuous(limits = 0:1) +
+  geom_abline(slope = 1, intercept = 0, size = .5, color = "grey") +
+  facet_grid(~parameter, labeller = label_parsed) +
+  labs(
+    title = "Mean posterior coder abilities vs. simulated parameter values"
+    , subtitle = "Points depict mean posterior values, overlaying vertical lines 90% credibility intervalls"
+    , x = "Simulated parameter value"
+    , y = "Posterior value"
+    , caption = "Diagonal indicates perfect correspondence"
+  ) +
+  theme_bw() + 
+  theme(plot.caption = element_text(hjust = 0))
 ```
 
 ###### Item classes 
@@ -888,13 +1159,14 @@ Finally, we can take a look on the model-classification of items relative to the
 
 ```{r inspect adapted class membership}
 # gives n_items*n_chains*n_iterations = 1000*3*1000 = 3,000,000 rows
-post_c <- map_df(1:n_items, function(i) 
-  tibble(item = i, c = unlist(adapted_fit[, sprintf("c[%s]", i)]))
-)
+post_c <- get_mcmc_estimates(fit.obj = adapted_fit, params = "c\\[\\d+\\]")
 
 post_c %>% 
-  group_by(item) %>% 
-  summarise(pr_pos = sum(c)/n()) %>% 
+  group_by(parameter) %>% 
+  summarise(pr_pos = sum(est)/n()) %>% 
+  mutate(
+    item = as.integer(stringr::str_extract(parameter, "\\d+"))
+  ) %>% 
   mutate(est_class = as.integer(pr_pos > .5)) %>% 
   left_join(tibble(item = 1:n_items, true_class = sim_item_classes)) %>% 
   mutate(aggreement = true_class == est_class) %>% 
